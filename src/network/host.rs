@@ -3,8 +3,10 @@ use tokio::prelude::*;
 use std::collections::HashMap;
 use crate::network::NodeId;
 use crate::network::connection::Connection;
+use crate::config::Config;
 
 pub struct Host {
+    // nodeid: NodeId,
     ready_sessions: HashMap<NodeId, Connection>,
 
 }
@@ -17,9 +19,9 @@ impl Host {
     }
 
     /// 启动网络服务， 1. 开启监听；
-    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind("0.0.0.0:30000").await?;
-        info!("listening on 0.0.0.0:30000");
+    pub async fn start(&self, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(config.listen_addr.as_str()).await?;
+        info!("listening on {}", config.listen_addr);
         loop {
             let (mut socket, addr) = listener.accept().await?;
             info!("accept tcp connection {}", addr);

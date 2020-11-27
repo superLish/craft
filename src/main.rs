@@ -48,7 +48,8 @@ fn main() {
 
     runtime.block_on( async {
         info!("tokio runtime.");
-        let network = network::NetworkService::new();
+        let config = config::Config::default();
+        let network = network::NetworkService::new(config);
         if let Err(e) = network.start().await {
             error!("{:?}", e);
         }
