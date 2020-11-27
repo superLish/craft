@@ -3,6 +3,9 @@ use crate::network::host::Host;
 mod error;
 mod host;
 mod connection;
+mod session;
+
+pub type NodeId = usize;
 
 
 /// 网络服务，提供对外接口

@@ -1,15 +1,18 @@
 use tokio::net::TcpListener;
-// use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::prelude::*;
+use std::collections::HashMap;
+use crate::network::NodeId;
+use crate::network::connection::Connection;
 
 pub struct Host {
+    ready_sessions: HashMap<NodeId, Connection>,
 
 }
 
 impl Host {
     pub fn new() -> Self {
         Host {
-
+            ready_sessions: HashMap::new(),
         }
     }
 

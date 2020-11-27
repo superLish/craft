@@ -2,6 +2,8 @@
 extern crate log;
 
 mod network;
+mod crypto;
+mod config;
 
 fn main() {
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).init().unwrap();
@@ -20,11 +22,24 @@ fn main() {
             .value_name("path"))
         .subcommand(clap::SubCommand::with_name("debug")
             .about("use for debug project."))
+        .subcommand(clap::SubCommand::with_name("generate_key")
+            .about("generate keypair."))
         .get_matches();
 
     if let Some(_) = matches.subcommand_matches("debug") {
         // default config for debug.
         info!("debug for project.");
+
+        let config = config::Config::default();
+        let keypair = crypto::generate_keypair_from_secret_str(config.secret.as_str()).unwrap();
+        info!("keypair: {}", keypair);
+    }
+
+    if let Some(_) = matches.subcommand_matches("generate_key") {
+        info!("command for generate keypair:");
+        let _ = crypto::generate_keypair();
+
+        return;
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
