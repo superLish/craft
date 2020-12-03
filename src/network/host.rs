@@ -1,19 +1,30 @@
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
 use std::collections::HashMap;
 use crate::network::NodeId;
 use crate::network::connection::Connection;
 use crate::config::Config;
+use parity_crypto::publickey::{Generator, KeyPair, Public, Random, recover, Secret, sign, ecdh, ecies};
+use ethereum_types::H512;
+
 
 pub struct Host {
-    // nodeid: NodeId,
+    nodeid: NodeId,
+    keypair: KeyPair,
     ready_sessions: HashMap<NodeId, Connection>,
 
 }
 
 impl Host {
-    pub fn new() -> Self {
+    pub fn new(config: &Config) -> Self {
+        let secret = Secret::copy_from_str(config.secret.as_str()).unwrap();
+        let keypair = KeyPair::from_secret(secret).unwrap();
+        let nodeid = keypair.public().clone();
+        info!("keypair: {}, nodeid: {:?}", keypair, nodeid);
+        
         Host {
+            nodeid,
+            keypair,
             ready_sessions: HashMap::new(),
         }
     }
@@ -56,6 +67,22 @@ impl Host {
 
 
         Ok(())
+    }
+
+    /// 主动连接到种子节点
+    pub async fn connect_seed(&self, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
+        info!("prepare to connect to seed {}", seed);
+        let mut stream = TcpStream::connect(seed).await?;
+        info!("connected to {}, prepare to estabilsh session.", seed);
+
+
+
+        Ok(())
+    }
+
+    /// 定时任务，待完成
+    pub async fn timer_task(&self) {
+        info!("timer task, wait to impl ......");
     }
 
 }
