@@ -4,7 +4,6 @@ use crate::crypto::NodeId;
 use crate::config::Config;
 
 
-mod error;
 mod host;
 mod connection;
 mod session;

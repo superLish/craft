@@ -1,18 +1,24 @@
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::collections::BTreeSet;
+use std::net::SocketAddr;
+use std::str::FromStr;
 use crate::network::NodeId;
-use crate::network::connection::Connection;
 use crate::config::Config;
+use crate::network::session::Session;
 use parity_crypto::publickey::{Generator, KeyPair, Public, Random, recover, Secret, sign, ecdh, ecies};
 use ethereum_types::H512;
+use parking_lot::{Mutex, RwLock};
+use std::sync::Arc;
 
+type ShareSession = Arc<Mutex<Session>>; 
 
 pub struct Host {
     nodeid: NodeId,
     keypair: KeyPair,
-    ready_sessions: HashMap<NodeId, Connection>,
-
+    ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>,     // 就绪状态的会话
+    pending_sessions: Arc<RwLock<Vec<ShareSession>>>,           // 未就绪状态的会话
 }
 
 impl Host {
@@ -25,7 +31,8 @@ impl Host {
         Host {
             nodeid,
             keypair,
-            ready_sessions: HashMap::new(),
+            ready_sessions: Arc::new(RwLock::new(HashMap::new())),
+            pending_sessions: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -34,9 +41,16 @@ impl Host {
         let listener = TcpListener::bind(config.listen_addr.as_str()).await?;
         info!("listening on {}", config.listen_addr);
         loop {
-            let (mut socket, addr) = listener.accept().await?;
+            let (socket, addr) = listener.accept().await?;
             info!("accept tcp connection {}", addr);
 
+            let session = Session::new(socket, None);
+            let mut lock = self.pending_sessions.write();
+            let share_session = Arc::new(Mutex::new(session));
+            let arc_session = share_session.clone();
+            lock.push(share_session);
+
+/*
             tokio::spawn( async move {
                 let mut buf = [0; 1024];
 
@@ -55,16 +69,10 @@ impl Host {
                             return;
                         }
                     };
-
-                    if let Err(e) = socket.write_all(&buf[0..n]).await {
-                        error!("failed to write to {}, {}", addr, e);
-                        return;
-                    }
-                    info!("write bytes to {}", addr);
                 }
             });
+*/
         }
-
 
         Ok(())
     }
@@ -72,10 +80,17 @@ impl Host {
     /// 主动连接到种子节点
     pub async fn connect_seed(&self, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
         info!("prepare to connect to seed {}", seed);
-        let mut stream = TcpStream::connect(seed).await?;
+        let (nodeid, addr) = enode_str_parse(seed)?;
+        let stream = TcpStream::connect(addr).await?;
         info!("connected to {}, prepare to estabilsh session.", seed);
 
+        let session = Session::new(stream, Some(nodeid));
+        let mut lock = self.pending_sessions.write();
+        let share_session = Arc::new(Mutex::new(session));
+        let arc_session = share_session.clone();
+        lock.push(share_session);
 
+        arc_session.lock().write_auth().await?;
 
         Ok(())
     }
@@ -85,4 +100,15 @@ impl Host {
         info!("timer task, wait to impl ......");
     }
 
+}
+
+fn enode_str_parse(node: &str) -> Result<(NodeId, &str), Box<dyn std::error::Error>> {
+    info!("node is {}", node);
+    let pubkey = &node[8..136];
+    info!("pubkey is {}", pubkey);
+    let nodeid = H512::from_str(pubkey)?;
+    let addr = &node[137..];
+    info!("socket addr is {}", addr);
+    
+    Ok((nodeid, addr))
 }
