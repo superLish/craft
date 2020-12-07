@@ -13,6 +13,7 @@ use ethereum_types::H512;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use slab::Slab;
 
 type ShareSession = Arc<Mutex<Session>>;
 
@@ -20,7 +21,7 @@ pub struct Host {
     nodeid: NodeId,
     keypair: KeyPair,
     ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>,     // 就绪状态的会话
-    pending_sessions: Arc<RwLock<Vec<ShareSession>>>,               // 未就绪状态的会话
+    pending_sessions: Arc<RwLock<Slab<ShareSession>>>,               // 未就绪状态的会话
 }
 
 impl Host {
@@ -34,16 +35,13 @@ impl Host {
             nodeid,
             keypair,
             ready_sessions: Arc::new(RwLock::new(HashMap::new())),
-            pending_sessions: Arc::new(RwLock::new(Vec::new())),
+            pending_sessions: Arc::new(RwLock::new(Slab::new())),
         }
     }
 
-    async fn process_new_connect(socket: TcpStream, ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>, pending_sessions: Arc<RwLock<Vec<ShareSession>>>) {
-        let mut session = Session::new(socket, None);
-
-        let share_session = Arc::new(Mutex::new(session));
+    async fn process_new_connect(share_session: ShareSession, ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>, pending_sessions: Arc<RwLock<Slab<ShareSession>>>) {
         let arc_session = share_session.clone();
-        pending_sessions.write().push(share_session);
+        let key = pending_sessions.write().insert(share_session);
         info!("create session, before session reading.");
         let session_reading = arc_session.lock().await.reading().await;       // fixme: 错误处理
         match session_reading {
@@ -52,16 +50,32 @@ impl Host {
             },
             ReadResult::Hub => {
                 // fixme:
-                info!("host read connection disconnected.");
+                info!("host read connection disconnected, remove.");
+                if let Some(nodeid) = arc_session.lock().await.remote() {
+                    info!("ready_sessions before remove {}", ready_sessions.read().len());
+                    ready_sessions.write().remove(nodeid);
+                    info!("ready_sessions after remove {}", ready_sessions.read().len());
+                } else {
+                    info!("pending_sessions before remove key<{}>, {}", key, pending_sessions.read().len());
+                    pending_sessions.write().remove(key);
+                    info!("pending_sessions after remove key<{}>, {}", key, pending_sessions.read().len());
+                }
             },
             ReadResult::Error(e) => {
                 //fixme:
                 error!("host read error {}", e);
+                if let Some(nodeid) = arc_session.lock().await.remote() {
+                    info!("ready_sessions before remove {}", ready_sessions.read().len());
+                    ready_sessions.write().remove(nodeid);
+                    info!("ready_sessions after remove {}", ready_sessions.read().len());
+                } else {
+                    info!("pending_sessions before remove key<{}>, {}", key, pending_sessions.read().len());
+                    pending_sessions.write().remove(key);
+                    info!("pending_sessions after remove key<{}>, {}", key, pending_sessions.read().len());
+                }
             }
         }
         info!("after session reading.");
-
-
     }
 
 
@@ -74,31 +88,13 @@ impl Host {
             info!("accept tcp connection {}", addr);
             let ready_sessions = self.ready_sessions.clone();
             let pending_sessions = self.pending_sessions.clone();
-            tokio::spawn( async move {
-                Host::process_new_connect(socket, ready_sessions, pending_sessions).await;
-            });
-/*
-            tokio::spawn( async move {
-                let mut buf = [0; 1024];
 
-                loop {
-                    let n = match socket.read(&mut buf).await {
-                        Ok(n) if n == 0 => {
-                            info!("read 0, connection end.");
-                            return;
-                        },
-                        Ok(n) => {
-                            info!("read {} bytes from {}", n, addr);
-                            n
-                        },
-                        Err(e) => {
-                            error!("read failure from {}, {}", addr, e);
-                            return;
-                        }
-                    };
-                }
+            let mut session = Session::new(socket, None);
+            let share_session = Arc::new(Mutex::new(session));
+
+            tokio::spawn( async move {
+                Host::process_new_connect(share_session, ready_sessions, pending_sessions).await;
             });
-*/
         }
 
         Ok(())
@@ -111,12 +107,22 @@ impl Host {
         let stream = TcpStream::connect(addr).await?;
         info!("connected to {}, prepare to estabilsh session.", seed);
 
+        let ready_sessions = self.ready_sessions.clone();
+        let pending_sessions = self.pending_sessions.clone();
+
         let session = Session::new(stream, Some(nodeid));
-        let mut lock = self.pending_sessions.write();
         let share_session = Arc::new(Mutex::new(session));
         let arc_session = share_session.clone();
-        lock.push(share_session);
+        tokio::spawn( async move {
+            Host::process_new_connect(share_session, ready_sessions, pending_sessions).await;
+        });
 
+
+        // let mut lock = self.pending_sessions.write();
+        // let share_session = Arc::new(Mutex::new(session));
+        // let arc_session = share_session.clone();
+        // let key = lock.insert(share_session);
+        //
         arc_session.lock().await.write_auth().await?;
 
         Ok(())

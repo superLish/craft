@@ -31,6 +31,10 @@ impl Session {
         self.remote = Some(nodeid);
     }
 
+    pub fn remote(&self) -> Option<&NodeId> {
+        self.remote.as_ref()
+    }
+
     // 主动发起方，向对方发送握手信息， 目前采用明文传输方式，直接将本节点ID传输至对方,实际上应该采用密码学的方式，recover出公钥，这里先忽略，待以后补充。
     pub async fn write_auth(&mut self) -> Result<(), Box<dyn std::error::Error>>{
         let remote = &self.remote;

@@ -10,6 +10,7 @@ pub enum ReadResult {
     Error(String),      // 读出错
 }
 
+#[derive(Debug)]
 enum Stage {
     Header,
     Body,
@@ -96,8 +97,8 @@ impl Connection {
                     return ReadResult::Hub;
                 },
                 Ok(n) => {
-                    info!("read {} bytes in rawbuf: {:?}", n, buf);
-                    self.buffer.extend_from_slice(&buf[0..n]);
+                    info!("read {} bytes in rawbuf: {:?}", n, rawbuf);
+                    self.buffer.extend_from_slice(&rawbuf[0..n]);
                     if self.buffer.len() >= self.expect {
                         // 已经接收到一个完整的包头或者包体
                         match self.stage {
