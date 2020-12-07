@@ -7,18 +7,20 @@ use std::str::FromStr;
 use crate::network::NodeId;
 use crate::config::Config;
 use crate::network::session::Session;
+use crate::network::connection::ReadResult;
 use parity_crypto::publickey::{Generator, KeyPair, Public, Random, recover, Secret, sign, ecdh, ecies};
 use ethereum_types::H512;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
-type ShareSession = Arc<Mutex<Session>>; 
+type ShareSession = Arc<Mutex<Session>>;
 
 pub struct Host {
     nodeid: NodeId,
     keypair: KeyPair,
     ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>,     // 就绪状态的会话
-    pending_sessions: Arc<RwLock<Vec<ShareSession>>>,           // 未就绪状态的会话
+    pending_sessions: Arc<RwLock<Vec<ShareSession>>>,               // 未就绪状态的会话
 }
 
 impl Host {
@@ -36,6 +38,33 @@ impl Host {
         }
     }
 
+    async fn process_new_connect(socket: TcpStream, ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>, pending_sessions: Arc<RwLock<Vec<ShareSession>>>) {
+        let mut session = Session::new(socket, None);
+
+        let share_session = Arc::new(Mutex::new(session));
+        let arc_session = share_session.clone();
+        pending_sessions.write().push(share_session);
+        info!("create session, before session reading.");
+        let session_reading = arc_session.lock().await.reading().await;       // fixme: 错误处理
+        match session_reading {
+            ReadResult::Packet(data) => {
+                info!("host read {:?}", data);
+            },
+            ReadResult::Hub => {
+                // fixme:
+                info!("host read connection disconnected.");
+            },
+            ReadResult::Error(e) => {
+                //fixme:
+                error!("host read error {}", e);
+            }
+        }
+        info!("after session reading.");
+
+
+    }
+
+
     /// 启动网络服务， 1. 开启监听；
     pub async fn start(&self, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(config.listen_addr.as_str()).await?;
@@ -43,13 +72,11 @@ impl Host {
         loop {
             let (socket, addr) = listener.accept().await?;
             info!("accept tcp connection {}", addr);
-
-            let session = Session::new(socket, None);
-            let mut lock = self.pending_sessions.write();
-            let share_session = Arc::new(Mutex::new(session));
-            let arc_session = share_session.clone();
-            lock.push(share_session);
-
+            let ready_sessions = self.ready_sessions.clone();
+            let pending_sessions = self.pending_sessions.clone();
+            tokio::spawn( async move {
+                Host::process_new_connect(socket, ready_sessions, pending_sessions).await;
+            });
 /*
             tokio::spawn( async move {
                 let mut buf = [0; 1024];
@@ -90,7 +117,7 @@ impl Host {
         let arc_session = share_session.clone();
         lock.push(share_session);
 
-        arc_session.lock().write_auth().await?;
+        arc_session.lock().await.write_auth().await?;
 
         Ok(())
     }

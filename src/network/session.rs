@@ -1,5 +1,5 @@
 use tokio::net::TcpStream;
-use crate::network::connection::{Connection, HEADER_LEN};
+use crate::network::connection::{Connection, HEADER_LEN, ReadResult};
 use crate::crypto::NodeId;
 use std::vec::Vec;
 
@@ -54,5 +54,26 @@ impl Session {
         self.connection.send(&packet).await?;
 
         Ok(())
+    }
+
+    pub async fn reading(&mut self) -> ReadResult {
+        loop {
+            match self.connection.read().await {
+                ReadResult::Packet(data) => {
+                    // todo: 向上层返回
+                    info!("session read: {:?}", data);
+                    continue;
+                },
+                ReadResult::Hub => {
+                    // todo: 断开连接
+                    info!("session connection disconnected.");
+                    return ReadResult::Hub;
+                },
+                ReadResult::Error(e) => {
+                    error!("session reading error: {}", e);
+                    return ReadResult::Error(e);
+                }
+            }
+        }
     }
 }
