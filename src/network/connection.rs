@@ -1,19 +1,30 @@
 use tokio::net::TcpStream;
 use tokio::prelude::*;
 use tokio::io::AsyncRead;
+use crate::network::session::PROTOCOL_VERSION;
+use crate::network::error::NetError;
+use std::error::Error;
+use std::net::SocketAddr;
 
 pub const HEADER_LEN: usize = 16;
 
+
 pub enum ReadResult {
-    Packet(Bytes),      // 读到的payload数据， header数据不向上层返回
+    Packet(Packet),      // 读到的payload数据， header数据不向上层返回
     Hub,                // 读到0，节点断开
-    Error(String),      // 读出错
+    Error(NetError),      // 读出错
+}
+
+#[derive(Debug)]
+pub struct Packet {
+    pub id: u8,
+    pub data: Bytes,
 }
 
 #[derive(Debug)]
 enum Stage {
     Header,
-    Body,
+    Body(u8),       // packet_id
 }
 
 pub type Bytes = Vec<u8>;
@@ -37,6 +48,10 @@ impl Connection {
         }
     }
 
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.peer_addr()
+    }
+
     pub fn expect(&mut self, expect: usize, stage: Stage) {
         self.expect = expect;
         self.stage = stage;
@@ -50,25 +65,41 @@ impl Connection {
         Ok(())
     }
 
-    fn read_header(&mut self) {
+    fn read_header(&mut self) -> Result<(), NetError> {
         info!("read_header: buffer({}) {:?}", self.buffer.len(), self.buffer);
         let header = &self.buffer[0..HEADER_LEN];
         info!("read_header: header {:?}", header);
+
+        // check protocol version.
+        let version = header[0];
+        if version != PROTOCOL_VERSION {
+            let reason = format!("mismatch protocol version. local version: {}, remote version: {}", PROTOCOL_VERSION, version);
+            error!("{}", reason);
+            return Err(NetError::ProtocolMismatch(reason));
+        }
+
+        // type id
+        let packet_id = header[1];
+
+        // todo: command目前先忽略
+
         // let payload_len = (header[0] as u32) + (header[1] as u32)<<8 + (header[2] as u32)<<16 + (header[3] as u32)<<24;
-        let h0 = header[0] as u32;
-        let h1 = (header[1] as u32) << 8;
-        let h2 = (header[2] as u32) << 16;
-        let h3 = (header[3] as u32) << 24;
+        let h0 = header[4] as u32;
+        let h1 = (header[5] as u32) << 8;
+        let h2 = (header[6] as u32) << 16;
+        let h3 = (header[7] as u32) << 24;
         info!("header: {} {} {} {}", h0, h1, h2, h3);
         let payload_len = h0 + h1 + h2 + h3;
         info!("read header: payload_len={}", payload_len);
-        self.expect(payload_len as usize, Stage::Body);
+        self.expect(payload_len as usize, Stage::Body(packet_id));
         let buffer_len = self.buffer.len();
         let res = self.buffer[HEADER_LEN..buffer_len].to_vec();
         info!("read_header: res {:?}", res);
         self.buffer.clear();
         self.buffer.extend_from_slice(res.as_slice());
         info!("read_header, after copy: buffer {:?}", self.buffer);
+
+        Ok(())
     }
 
     fn read_body(&mut self) -> Bytes {
@@ -103,11 +134,13 @@ impl Connection {
                         // 已经接收到一个完整的包头或者包体
                         match self.stage {
                             Stage::Header => {
-                                self.read_header();
+                                if let Err(e) = self.read_header() {
+                                    return ReadResult::Error(e);
+                                }
                             },
-                            Stage::Body => {
+                            Stage::Body(id) => {
                                 let body = self.read_body();
-                                return ReadResult::Packet(body);
+                                return ReadResult::Packet(Packet {id, data: body});
                             }
                         }
                     }
@@ -115,7 +148,7 @@ impl Connection {
                 Err(e) => {
                     let reason = format!("{}", e);
                     error!("read failure from {:?}, {}", self.socket.peer_addr(), reason);
-                    return ReadResult::Error(reason);
+                    return ReadResult::Error(NetError::IoError(reason));
                 },
             };
         }

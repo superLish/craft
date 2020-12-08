@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use crate::network::NodeId;
 use crate::config::Config;
-use crate::network::session::Session;
-use crate::network::connection::ReadResult;
+use crate::network::session::{Session, SessionReadResult};
+// use crate::network::connection::ReadResult;
 use parity_crypto::publickey::{Generator, KeyPair, Public, Random, recover, Secret, sign, ecdh, ecies};
 use ethereum_types::H512;
 use parking_lot::RwLock;
@@ -22,10 +22,11 @@ pub struct Host {
     keypair: KeyPair,
     ready_sessions: Arc<RwLock<HashMap<NodeId, ShareSession>>>,     // 就绪状态的会话
     pending_sessions: Arc<RwLock<Slab<ShareSession>>>,               // 未就绪状态的会话
+    version: u8,
 }
 
 impl Host {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, version: u8) -> Self {
         let secret = Secret::copy_from_str(config.secret.as_str()).unwrap();
         let keypair = KeyPair::from_secret(secret).unwrap();
         let nodeid = keypair.public().clone();
@@ -36,6 +37,7 @@ impl Host {
             keypair,
             ready_sessions: Arc::new(RwLock::new(HashMap::new())),
             pending_sessions: Arc::new(RwLock::new(Slab::new())),
+            version
         }
     }
 
@@ -45,11 +47,11 @@ impl Host {
         info!("create session, before session reading.");
         let session_reading = arc_session.lock().await.reading().await;       // fixme: 错误处理
         match session_reading {
-            ReadResult::Packet(data) => {
+            SessionReadResult::Packet(data) => {
+                // fixme: 这个地方不会返回，应该在某个地方将消息发送到上层。
                 info!("host read {:?}", data);
             },
-            ReadResult::Hub => {
-                // fixme:
+            SessionReadResult::Hub => {
                 info!("host read connection disconnected, remove.");
                 if let Some(nodeid) = arc_session.lock().await.remote() {
                     info!("ready_sessions before remove {}", ready_sessions.read().len());
@@ -61,8 +63,7 @@ impl Host {
                     info!("pending_sessions after remove key<{}>, {}", key, pending_sessions.read().len());
                 }
             },
-            ReadResult::Error(e) => {
-                //fixme:
+            SessionReadResult::Error(e) => {
                 error!("host read error {}", e);
                 if let Some(nodeid) = arc_session.lock().await.remote() {
                     info!("ready_sessions before remove {}", ready_sessions.read().len());
@@ -89,7 +90,7 @@ impl Host {
             let ready_sessions = self.ready_sessions.clone();
             let pending_sessions = self.pending_sessions.clone();
 
-            let mut session = Session::new(socket, None);
+            let mut session = Session::new(socket, None, self.version);
             let share_session = Arc::new(Mutex::new(session));
 
             tokio::spawn( async move {
@@ -110,19 +111,13 @@ impl Host {
         let ready_sessions = self.ready_sessions.clone();
         let pending_sessions = self.pending_sessions.clone();
 
-        let session = Session::new(stream, Some(nodeid));
+        let session = Session::new(stream, Some(nodeid), self.version);
         let share_session = Arc::new(Mutex::new(session));
         let arc_session = share_session.clone();
         tokio::spawn( async move {
             Host::process_new_connect(share_session, ready_sessions, pending_sessions).await;
         });
 
-
-        // let mut lock = self.pending_sessions.write();
-        // let share_session = Arc::new(Mutex::new(session));
-        // let arc_session = share_session.clone();
-        // let key = lock.insert(share_session);
-        //
         arc_session.lock().await.write_auth().await?;
 
         Ok(())
@@ -131,6 +126,7 @@ impl Host {
     /// 定时任务，待完成
     pub async fn timer_task(&self) {
         info!("timer task, wait to impl ......");
+        // fixme: KAD节点发现服务待实现。
     }
 
 }
