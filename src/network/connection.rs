@@ -10,8 +10,8 @@ pub const HEADER_LEN: usize = 16;
 
 
 pub enum ReadResult {
-    Packet(Packet),      // 读到的payload数据， header数据不向上层返回
-    Hub,                // 读到0，节点断开
+    Packet(Packet),       // 读到的payload数据， header数据不向上层返回
+    Hub,                  // 读到0，节点断开
     Error(NetError),      // 读出错
 }
 
@@ -48,10 +48,6 @@ impl Connection {
         }
     }
 
-    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.socket.peer_addr()
-    }
-
     pub fn expect(&mut self, expect: usize, stage: Stage) {
         self.expect = expect;
         self.stage = stage;
@@ -63,6 +59,56 @@ impl Connection {
         info!("write {} bytes to remote: {:?} done.", data.len(), self.socket.peer_addr());
 
         Ok(())
+    }
+
+    pub async fn read(&mut self) -> Vec<ReadResult> {
+        let mut rawbuf = [0u8; 32];
+
+        // 这个loop循环是从Socket读字节流，一次完整的读包操作
+        loop {
+            let n = match self.socket.read(&mut rawbuf).await {
+                Ok(n) if 0 == n => {
+                    info!("read 0, {:?} connection end.", self.socket.peer_addr());
+                    // todo: 连接断开， 从sessions中删除会话
+                    return vec![ReadResult::Hub];
+                },
+                Ok(n) => {
+                    info!("read {} bytes in rawbuf: {:?}", n, rawbuf);
+                    self.buffer.extend_from_slice(&rawbuf[0..n]);
+
+                    let mut result = Vec::new();
+                    while self.buffer.len() >= self.expect {
+                        if let Some(r) = self.check_buffer().await {
+                            result.push(r);
+                        }
+                    }
+                    return result;
+                },
+                Err(e) => {
+                    let reason = format!("{}", e);
+                    error!("read failure from {:?}, {}", self.socket.peer_addr(), reason);
+                    return vec![ReadResult::Error(NetError::IoError(reason))];
+                },
+            };
+        }
+    }
+
+    async fn check_buffer(&mut self) -> Option<ReadResult> {
+        assert!(self.buffer.len() >= self.expect);
+        // 已经接收到一个完整的包头或者包体
+        match self.stage {
+            Stage::Header => {
+                if let Err(e) = self.read_header() {
+                    return Some(ReadResult::Error(e));
+                }
+            },
+            Stage::Body(id) => {
+                let body = self.read_body();
+                return Some(ReadResult::Packet(Packet {id, data: body}));
+            }
+        }
+
+        None
     }
 
     fn read_header(&mut self) -> Result<(), NetError> {
@@ -88,7 +134,7 @@ impl Connection {
         let h1 = (header[5] as u32) << 8;
         let h2 = (header[6] as u32) << 16;
         let h3 = (header[7] as u32) << 24;
-        info!("header: {} {} {} {}", h0, h1, h2, h3);
+        debug!("header: {} {} {} {}", h0, h1, h2, h3);
         let payload_len = h0 + h1 + h2 + h3;
         info!("read header: payload_len={}", payload_len);
         self.expect(payload_len as usize, Stage::Body(packet_id));
@@ -116,41 +162,7 @@ impl Connection {
         packet
     }
 
-    pub async fn read(&mut self) -> ReadResult {
-        let mut rawbuf = [0u8; 32];
-
-        // 这个loop循环是从Socket读字节流，一次完整的读包操作
-        loop {
-            let n = match self.socket.read(&mut rawbuf).await {
-                Ok(n) if 0 == n => {
-                    info!("read 0, {:?} connection end.", self.socket.peer_addr());
-                    // todo: 连接断开， 从sessions中删除会话
-                    return ReadResult::Hub;
-                },
-                Ok(n) => {
-                    info!("read {} bytes in rawbuf: {:?}", n, rawbuf);
-                    self.buffer.extend_from_slice(&rawbuf[0..n]);
-                    if self.buffer.len() >= self.expect {
-                        // 已经接收到一个完整的包头或者包体
-                        match self.stage {
-                            Stage::Header => {
-                                if let Err(e) = self.read_header() {
-                                    return ReadResult::Error(e);
-                                }
-                            },
-                            Stage::Body(id) => {
-                                let body = self.read_body();
-                                return ReadResult::Packet(Packet {id, data: body});
-                            }
-                        }
-                    }
-                },
-                Err(e) => {
-                    let reason = format!("{}", e);
-                    error!("read failure from {:?}, {}", self.socket.peer_addr(), reason);
-                    return ReadResult::Error(NetError::IoError(reason));
-                },
-            };
-        }
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.peer_addr()
     }
 }

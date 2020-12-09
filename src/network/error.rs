@@ -5,6 +5,7 @@ pub enum NetError {
     ProtocolMismatch(String),       // 协议不匹配
     IoError(String),                // IO错误
     DataFault(String),              // 数据错误
+    PingTimeout,                    // Ping超时
     Unknown,
 }
 
@@ -19,7 +20,10 @@ impl std::error::Error for NetError {
             },
             NetError::DataFault(reason) => {
                 reason
-            }
+            },
+            NetError::PingTimeout => {
+                "ping timeout."
+            },
             NetError::Unknown => {
                 "unknown"
             }
@@ -38,7 +42,10 @@ impl std::fmt::Display for NetError {
             },
             NetError::DataFault(reason) => {
                 write!(f, "data fault: {}", reason)
-            }
+            },
+            NetError::PingTimeout => {
+                write!(f, "ping timeout.")
+            },
             NetError::Unknown => {
                 write!(f, "unknown error.")
             }
