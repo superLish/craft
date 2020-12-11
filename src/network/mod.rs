@@ -14,6 +14,8 @@ pub async fn start_network(config: Config) {
     if let Err(e) = network.start().await {
         error!("{:?}", e);
     }
+
+    info!("network service end.");
 }
 
 /// 网络服务，提供对外接口

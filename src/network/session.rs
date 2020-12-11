@@ -1,10 +1,12 @@
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use crate::network::connection::{Connection, HEADER_LEN, ReadResult, Bytes};
 use crate::crypto::NodeId;
 use std::vec::Vec;
 use crate::network::error::NetError;
 use std::error::Error;
 use std::time::{Instant, Duration};
+use std::cell::RefCell;
 
 /**
  *  Header(16 bytes) [version(1 bytes) 协议版本号，区别与节点版本号，暂时不用| type_id(1 bytes) | cmd(2 bytes) | payload_len(4 bytes) | ...] | Payload (n bytes)

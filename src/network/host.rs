@@ -15,8 +15,10 @@ use tokio::sync::Mutex;
 use tokio::time::{Interval, Duration};
 use slab::Slab;
 use std::io::Write;
+use std::rc::Rc;
+// use futures::join;
 
-type ShareSession = Arc<Mutex<Session>>;
+type ShareSession = Rc<Session>;
 
 pub struct Host {
     nodeid: NodeId,
@@ -40,32 +42,42 @@ impl Host {
         }
     }
 
-    async fn process_new_connect(share_session: ShareSession, sessions: Arc<RwLock<Slab<ShareSession>>>) {
-        let arc_session = share_session.clone();
-        let key = sessions.write().insert(share_session);
+    async fn process_new_connect(session: ShareSession, sessions: Arc<RwLock<Slab<ShareSession>>>) {
+        let is_active = session.remote().is_some();
+        let mut rc_session1 = session.clone();
+        let mut rc_session2 = session.clone();
+        let key = sessions.write().insert(session);
         info!("create session, before session reading.");
         loop {
-            let session_reading = arc_session.lock().await.reading().await;       // fixme: 错误处理
-            for srr in session_reading {
-                match srr {
-                    SessionReadResult::Packet(data) => {
-                        // fixme: 这个地方不会返回，应该在某个地方将消息发送到上层。
-                        info!("host read {:?}", data);
-                    },
-                    SessionReadResult::Hub => {
-                        info!("host read connection disconnected, remove.");
-                        info!("sessions before remove key<{}>, {}", key, sessions.read().len());
-                        sessions.write().remove(key);
-                        info!("sessions after remove key<{}>, {}", key, sessions.read().len());
-                    },
-                    SessionReadResult::Error(e) => {
-                        error!("host read error {}", e);
-                        info!("sessions before remove key<{}>, {}", key, sessions.read().len());
-                        sessions.write().remove(key);
-                        info!("sessions after remove key<{}>, {}", key, sessions.read().len());
+            let task1 = async {
+                let session_reading = rc_session1.reading().await;       // fixme: 错误处理
+                for srr in session_reading {
+                    match srr {
+                        SessionReadResult::Packet(data) => {
+                            // fixme: 这个地方不会返回，应该在某个地方将消息发送到上层。
+                            info!("host read {:?}", data);
+                        },
+                        SessionReadResult::Hub => {
+                            info!("host read connection disconnected, remove.");
+                            info!("sessions before remove key<{}>, {}", key, sessions.read().len());
+                            sessions.write().remove(key);
+                            info!("sessions after remove key<{}>, {}", key, sessions.read().len());
+                        },
+                        SessionReadResult::Error(e) => {
+                            error!("host read error {}", e);
+                            info!("sessions before remove key<{}>, {}", key, sessions.read().len());
+                            sessions.write().remove(key);
+                            info!("sessions after remove key<{}>, {}", key, sessions.read().len());
+                        }
                     }
                 }
-            }
+            };
+
+            let task2 = async {
+                rc_session2.write_auth().await           // fixme: 错误处理
+            };
+
+            let r = tokio::join!(task1,task2);
         }
 
         info!("process new connect done.");
@@ -77,14 +89,14 @@ impl Host {
         info!("listening on {}", config.listen_addr);
         loop {
             let (socket, addr) = listener.accept().await?;
+
             info!("accept tcp connection {}", addr);
             let sessions = self.sessions.clone();
 
-            let mut session = Session::new(socket, None, self.version);
-            let share_session = Arc::new(Mutex::new(session));
+            let session = Session::new(socket, None, self.version);
 
             tokio::spawn( async move {
-                Host::process_new_connect(share_session, sessions).await;
+                Host::process_new_connect(Rc::new(session), sessions).await;
             });
         }
 
@@ -101,13 +113,13 @@ impl Host {
         let sessions = self.sessions.clone();
 
         let session = Session::new(stream, Some(nodeid), self.version);
-        let share_session = Arc::new(Mutex::new(session));
-        let arc_session = share_session.clone();
+        // let share_session = Arc::new(session);
+        // let arc_session = share_session.clone();
         tokio::spawn( async move {
-            Host::process_new_connect(share_session, sessions).await;
+            Host::process_new_connect(Rc::new(session), sessions).await;
         });
 
-        arc_session.lock().await.write_auth().await?;
+        // arc_session.write_auth().await?;
 
         Ok(())
     }
@@ -118,14 +130,14 @@ impl Host {
         // fixme: KAD节点发现服务待实现。
 
         // 心跳检测
-        let arc_sessions = self.sessions.clone();
-        tokio::spawn( async move {
-            Host::keep_alive(arc_sessions).await;
-        });
+        // let arc_sessions = self.sessions.clone();
+        // tokio::spawn( async move {
+        //     Host::keep_alive(arc_sessions).await;
+        // });
         info!("start timer task done.");
     }
-
-    async fn keep_alive(sessions: Arc<RwLock<Slab<ShareSession>>>) {
+/*
+    async fn keep_alive(sessions: Arc<RwLock<Slab<Session>>>) {
         loop {
             let mut remove_key = Vec::new();
             let arc_sessions = sessions.clone();
@@ -139,12 +151,12 @@ impl Host {
                 }
             }
 
-            for (k, s) in pair {
-                info!("after sleep trace 1.");
-                let mut lock = s.lock().await;
-                info!("after sleep trace 2.");
+            for (k, mut s) in pair {
+                // info!("after sleep trace 1.");
+                // let mut lock = s.lock().await;
+                // info!("after sleep trace 2.");
 
-                if let Err(e) = lock.keep_alive().await {
+                if let Err(e) = s.keep_alive().await {
                     error!("session keep alive error: {}, remove {}.", e, k);
                     remove_key.push(k);
                 }
@@ -160,7 +172,7 @@ impl Host {
 
         }
     }
-
+*/
 }
 
 fn enode_str_parse(node: &str) -> Result<(NodeId, &str), Box<dyn std::error::Error>> {
