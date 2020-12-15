@@ -6,6 +6,7 @@ pub enum NetError {
     IoError(String),                // IO错误
     DataFault(String),              // 数据错误
     PingTimeout,                    // Ping超时
+    ChannelSendError(String),       // Channel发送错误
     Unknown,
 }
 
@@ -24,6 +25,9 @@ impl std::error::Error for NetError {
             NetError::PingTimeout => {
                 "ping timeout."
             },
+            NetError::ChannelSendError(reason) => {
+                reason
+            }
             NetError::Unknown => {
                 "unknown"
             }
@@ -45,6 +49,9 @@ impl std::fmt::Display for NetError {
             },
             NetError::PingTimeout => {
                 write!(f, "ping timeout.")
+            },
+            NetError::ChannelSendError(reason) => {
+                write!(f, "channel send error: {}", reason)
             },
             NetError::Unknown => {
                 write!(f, "unknown error.")

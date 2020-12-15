@@ -1,16 +1,19 @@
-use futures::join;
 use crate::network::host::Host;
 use crate::crypto::NodeId;
 use crate::config::Config;
-
+use crate::network::connection::Bytes;
+use tokio::sync::mpsc;
 
 mod host;
 mod connection;
 mod session;
 mod error;
 
-pub async fn start_network(config: Config) {
-    let network = NetworkService::new(config);
+pub use host::enode_str_parse;
+
+
+pub async fn start_network(config: Config, tx_server_event: mpsc::Sender<ServerEvent>, rx_server_event: mpsc::Receiver<ServerEvent>, tx_net_event: mpsc::Sender<NetEvent>) {
+    let mut network = NetworkService::new(config, rx_server_event);
     if let Err(e) = network.start().await {
         error!("{:?}", e);
     }
@@ -22,47 +25,76 @@ pub async fn start_network(config: Config) {
 pub struct NetworkService {
     config: Config,
     host: Host,
-    version: u8,        // 客户端协议版本号， 从0开始，方便协议升级
+    receiver: mpsc::Receiver<ServerEvent>,
 }
 
 impl NetworkService {
-    pub fn new(config: Config) -> Self {
-        let version = 0u8;
-        let host = Host::new(&config, version);
+    pub fn new(config: Config, receiver: mpsc::Receiver<ServerEvent>) -> Self {
+        let host = Host::new(&config);
         NetworkService {
             config,
             host,
-            version,
+            receiver,
         }
     }
 
     /// 启动网络服务
-    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // 1. 连接到种子节点
-        let task1 = async {
-            if let Some(ref seed) = self.config.seed {
-                if let Err(e) = self.host.connect_seed(seed).await {
-                    error!("{:?}", e);
+    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        while let Some(event) = self.receiver.recv().await {
+            info!("network service recv {:?}", event);
+            match event {
+                ServerEvent::Start => {
+                    if let Err(e) = self.host.start(&self.config).await {
+                        error!("{:?}", e);
+                        // fimxe: 错误处理待补充
+                    }
+                },
+                ServerEvent::Send(ref data) => {
+                    if let Err(e) = self.host.send_packet(data).await {
+                        error!("{:?}", e);
+                    }
+                },
+                ServerEvent::ActiveConnect(ref seed) => {
+                    if let Err(e) = self.host.connect_seed(seed).await {
+                        error!("{:?}", e);
+                        // fixme: 错误处理待补充,比如，重试连接等处理，这里暂不实现
+                    }
                 }
             }
-        };
-
-        // 2. 开启定时服务
-        let task2 = async {
-            self.host.timer_task().await;    
-        };
-
-        // 3. 监听
-        let task3 = async {
-            if let Err(e) = self.host.start(&self.config).await {
-                error!("{:?}", e);
-            } 
-        };  
-
-        join!(task1, task2, task3);
+        }
 
         Ok(())
     }
+}
 
+// 对外事件
+#[derive(Debug)]
+pub enum NetEvent {
+    Connected(NodeId),      // 新的连接
+    Read(NetPacket),        // 网络读
+    Disconnected(NodeId),   // 连接已断开
+}
 
+// 内部事件
+#[derive(Debug)]
+pub enum ServerEvent {
+    Start,                      // 启动本地监听
+    ActiveConnect(String),      // 主动发起连接
+    Send(NetPacket),            // 向某节点发送数据
+    // Broadcast(Bytes)         // todo: 广播，暂不实现
+}
+
+#[derive(Debug)]
+pub struct NetPacket {
+    nodeid: NodeId,
+    data: Bytes,
+}
+
+impl NetPacket {
+    pub fn new(nodeid: NodeId, data: &Bytes) -> Self {
+        NetPacket {
+            nodeid,
+            data: data.clone(),
+        }
+    }
 }

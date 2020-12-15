@@ -5,6 +5,8 @@ use crate::network::session::PROTOCOL_VERSION;
 use crate::network::error::NetError;
 use std::error::Error;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 pub const HEADER_LEN: usize = 16;
 
@@ -21,26 +23,50 @@ pub struct Packet {
     pub data: Bytes,
 }
 
-#[derive(Debug)]
-enum Stage {
+#[derive(Debug, Clone)]
+pub enum Stage {
     Header,
     Body(u8),       // packet_id
 }
 
 pub type Bytes = Vec<u8>;
 
+pub struct ConnectionWrite {
+    socket: OwnedWriteHalf,
+}
+
+impl ConnectionWrite {
+    pub fn new(socket: OwnedWriteHalf) -> Self {
+        ConnectionWrite {
+            socket
+        }
+    }
+
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        info!("prepare to write {} bytes to remote: {:?}", data.len(), self.socket.as_ref().peer_addr());
+        self.socket.write_all(data).await?;
+        info!("write {} bytes to remote: {:?} done.", data.len(), self.socket.as_ref().peer_addr());
+
+        Ok(())
+    }
+
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.as_ref().peer_addr()
+    }
+}
+
 
 // 负责TCP层次的数据处理
-pub struct Connection {
-    socket: TcpStream,          // 底层TCP传输
+pub struct ConnectionRead {
+    socket: OwnedReadHalf,          // 底层TCP传输
     expect: usize,              // TCP流传输，需要自己切分数据流
     buffer: Bytes,              // 接收数据缓存
     stage: Stage,
 }
 
-impl Connection {
-    pub fn new(socket: TcpStream) -> Self {
-        Connection {
+impl ConnectionRead {
+    pub fn new(socket: OwnedReadHalf) -> Self {
+        ConnectionRead {
             socket,
             expect: HEADER_LEN,
             buffer: Bytes::new(),
@@ -53,14 +79,6 @@ impl Connection {
         self.stage = stage;
     }
 
-    pub async fn send(&mut self, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-        info!("prepare to write {} bytes to remote: {:?}", data.len(), self.socket.peer_addr());
-        self.socket.write_all(data).await?;
-        info!("write {} bytes to remote: {:?} done.", data.len(), self.socket.peer_addr());
-
-        Ok(())
-    }
-
     pub async fn read(&mut self) -> Vec<ReadResult> {
         let mut rawbuf = [0u8; 32];
 
@@ -68,7 +86,7 @@ impl Connection {
         loop {
             let n = match self.socket.read(&mut rawbuf).await {
                 Ok(n) if 0 == n => {
-                    info!("read 0, {:?} connection end.", self.socket.peer_addr());
+                    info!("read 0, {:?} connection end.", self.socket.as_ref().peer_addr());
                     // todo: 连接断开， 从sessions中删除会话
                     return vec![ReadResult::Hub];
                 },
@@ -86,7 +104,7 @@ impl Connection {
                 },
                 Err(e) => {
                     let reason = format!("{}", e);
-                    error!("read failure from {:?}, {}", self.socket.peer_addr(), reason);
+                    error!("read failure from {:?}, {}", self.socket.as_ref().peer_addr(), reason);
                     return vec![ReadResult::Error(NetError::IoError(reason))];
                 },
             };
@@ -163,6 +181,6 @@ impl Connection {
     }
 
     pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.socket.peer_addr()
+        self.socket.as_ref().peer_addr()
     }
 }

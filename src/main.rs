@@ -8,6 +8,10 @@ use yaml_rust::Yaml;
 use std::env;
 use std::fs::File;
 use std::io::Read;
+use crate::config::Config;
+use crate::network::{ServerEvent, NetPacket};
+use network::enode_str_parse;
+use tokio::time::{sleep, Duration};
 
 fn main() {
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).init().unwrap();
@@ -86,8 +90,69 @@ fn main() {
         .enable_time().build().unwrap();
 
     runtime.block_on( async {
-        network::start_network(config).await;
+        start_client(config).await;
     });
 
     info!("craft end.");
 }
+
+
+async fn start_client(config: Config) {
+    let seed = config.seed.clone();
+    let (tx_net_event, mut rx_net_event) = tokio::sync::mpsc::channel(1024);
+    let (tx_server_event, rx_server_event) = tokio::sync::mpsc::channel(1024);
+
+    let recv_task = async {
+        while let Some(event) = rx_net_event.recv().await {
+            info!("client recv {:?}", event);
+        }
+    };
+
+    let tx_server_event2 = tx_server_event.clone();
+    tokio::spawn( async move {
+        network::start_network(config, tx_server_event2, rx_server_event, tx_net_event.clone()).await;
+    });
+
+    let send_task = async {
+        sleep(Duration::from_millis(10)).await;
+        info!("send ServerEvent::Start to server, start listen service.");
+        tx_server_event.send(ServerEvent::Start).await;
+        if let Some(ref seed) = seed {
+            sleep(Duration::from_millis(1000)).await;
+            tx_server_event.send(ServerEvent::ActiveConnect(seed.clone())).await;
+        }
+    };
+
+    let test_task = async {
+        if let Some(ref seed) = seed {
+            sleep(Duration::from_millis(10*1000)).await;
+            let (nodeid, addr) = enode_str_parse(seed).unwrap();
+            let data = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+            tx_server_event.send(ServerEvent::Send(NetPacket::new(nodeid, &data))).await;
+        }
+    };
+
+    tokio::join!(recv_task, send_task, test_task);
+}
+
+
+// let task1 = async {
+//     info!("task1");
+// };
+//
+// let task2 = async {
+//     info!("task2");
+// };
+//
+// let main_task = async {
+//     // loop {
+//         tokio::select! {
+//             _ = task1 => {
+//                 info!("tast 1 exec.");
+//             }
+//             _ = task2 => {
+//                 info!("task 2 exec.");
+//             }
+//         }
+//     // }
+// };
