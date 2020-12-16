@@ -1,11 +1,7 @@
-use tokio::net::TcpStream;
 use tokio::prelude::*;
-use tokio::io::AsyncRead;
 use crate::network::session::PROTOCOL_VERSION;
 use crate::network::error::NetError;
-use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 pub const HEADER_LEN: usize = 16;
@@ -31,6 +27,7 @@ pub enum Stage {
 
 pub type Bytes = Vec<u8>;
 
+// 负责TCP层次的数据写处理
 pub struct ConnectionWrite {
     socket: OwnedWriteHalf,
 }
@@ -43,9 +40,9 @@ impl ConnectionWrite {
     }
 
     pub async fn send(&mut self, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-        info!("prepare to write {} bytes to remote: {:?}", data.len(), self.socket.as_ref().peer_addr());
+        debug!("prepare to write {} bytes to remote: {:?}", data.len(), self.socket.as_ref().peer_addr());
         self.socket.write_all(data).await?;
-        info!("write {} bytes to remote: {:?} done.", data.len(), self.socket.as_ref().peer_addr());
+        debug!("write {} bytes to remote: {:?} done.", data.len(), self.socket.as_ref().peer_addr());
 
         Ok(())
     }
@@ -56,9 +53,9 @@ impl ConnectionWrite {
 }
 
 
-// 负责TCP层次的数据处理
+// 负责TCP层次的数据读处理
 pub struct ConnectionRead {
-    socket: OwnedReadHalf,          // 底层TCP传输
+    socket: OwnedReadHalf,      // 底层TCP传输
     expect: usize,              // TCP流传输，需要自己切分数据流
     buffer: Bytes,              // 接收数据缓存
     stage: Stage,
@@ -80,7 +77,7 @@ impl ConnectionRead {
     }
 
     pub async fn read(&mut self) -> Vec<ReadResult> {
-        let mut rawbuf = [0u8; 32];
+        let mut rawbuf = [0u8; 1600];
 
         // 这个loop循环是从Socket读字节流，一次完整的读包操作
         loop {
@@ -91,10 +88,11 @@ impl ConnectionRead {
                     return vec![ReadResult::Hub];
                 },
                 Ok(n) => {
-                    info!("read {} bytes in rawbuf: {:?}", n, rawbuf);
+                    debug!("read {} bytes in rawbuf: {:?}", n, &rawbuf[0..n]);
                     self.buffer.extend_from_slice(&rawbuf[0..n]);
 
                     let mut result = Vec::new();
+                    // 收到的可能是很多个包黏在一起，在这里拆包，一直到完整的包都处理完
                     while self.buffer.len() >= self.expect {
                         if let Some(r) = self.check_buffer().await {
                             result.push(r);
@@ -130,9 +128,9 @@ impl ConnectionRead {
     }
 
     fn read_header(&mut self) -> Result<(), NetError> {
-        info!("read_header: buffer({}) {:?}", self.buffer.len(), self.buffer);
+        debug!("read_header: buffer({}) {:?}", self.buffer.len(), self.buffer);
         let header = &self.buffer[0..HEADER_LEN];
-        info!("read_header: header {:?}", header);
+        debug!("read_header: header {:?}", header);
 
         // check protocol version.
         let version = header[0];
@@ -154,27 +152,27 @@ impl ConnectionRead {
         let h3 = (header[7] as u32) << 24;
         debug!("header: {} {} {} {}", h0, h1, h2, h3);
         let payload_len = h0 + h1 + h2 + h3;
-        info!("read header: payload_len={}", payload_len);
+        debug!("read header: payload_len={}", payload_len);
         self.expect(payload_len as usize, Stage::Body(packet_id));
         let buffer_len = self.buffer.len();
         let res = self.buffer[HEADER_LEN..buffer_len].to_vec();
-        info!("read_header: res {:?}", res);
+        debug!("read_header: res {:?}", res);
         self.buffer.clear();
         self.buffer.extend_from_slice(res.as_slice());
-        info!("read_header, after copy: buffer {:?}", self.buffer);
+        debug!("read_header, after copy: buffer {:?}", self.buffer);
 
         Ok(())
     }
 
     fn read_body(&mut self) -> Bytes {
-        info!("read_body: buffer {:?}", self.buffer);
+        debug!("read_body: buffer {:?}", self.buffer);
         let buffer_len = self.buffer.len();
         let mut packet = Vec::new();
         packet.extend_from_slice(&self.buffer[0..self.expect]);
         let res = self.buffer[self.expect..buffer_len].to_vec();
         self.buffer.clear();
         self.buffer.extend_from_slice(res.as_slice());
-        info!("read_body, after copy: buffer {:?}", self.buffer);
+        debug!("read_body, after copy: buffer {:?}", self.buffer);
         self.expect(HEADER_LEN, Stage::Header);
 
         packet

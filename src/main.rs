@@ -48,7 +48,7 @@ fn main() {
         let mut s = String::new();
         file.read_to_string(&mut s).unwrap();
         let cfgs = yaml_rust::YamlLoader::load_from_str(&s).unwrap();
-        info!("{:?}", cfgs);
+        debug!("{:?}", cfgs);
         for cfg in cfgs {
             match cfg {
                 Yaml::Hash(hash) => {
@@ -104,7 +104,7 @@ async fn start_client(config: Config) {
 
     let recv_task = async {
         while let Some(event) = rx_net_event.recv().await {
-            info!("client recv {:?}", event);
+            info!("craft client recv {:?}", event);
         }
     };
 

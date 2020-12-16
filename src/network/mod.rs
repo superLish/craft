@@ -13,7 +13,7 @@ pub use host::enode_str_parse;
 
 
 pub async fn start_network(config: Config, tx_server_event: mpsc::Sender<ServerEvent>, rx_server_event: mpsc::Receiver<ServerEvent>, tx_net_event: mpsc::Sender<NetEvent>) {
-    let mut network = NetworkService::new(config, rx_server_event);
+    let mut network = NetworkService::new(config, rx_server_event, tx_net_event);
     if let Err(e) = network.start().await {
         error!("{:?}", e);
     }
@@ -21,7 +21,7 @@ pub async fn start_network(config: Config, tx_server_event: mpsc::Sender<ServerE
     info!("network service end.");
 }
 
-/// 网络服务，提供对外接口
+/// 网络服务
 pub struct NetworkService {
     config: Config,
     host: Host,
@@ -29,8 +29,8 @@ pub struct NetworkService {
 }
 
 impl NetworkService {
-    pub fn new(config: Config, receiver: mpsc::Receiver<ServerEvent>) -> Self {
-        let host = Host::new(&config);
+    pub fn new(config: Config, receiver: mpsc::Receiver<ServerEvent>, net_sender: mpsc::Sender<NetEvent>) -> Self {
+        let host = Host::new(&config, net_sender);
         NetworkService {
             config,
             host,

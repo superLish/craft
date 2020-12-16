@@ -1,52 +1,47 @@
 use tokio::net::{TcpListener, TcpStream};
-use tokio::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::collections::BTreeSet;
-use std::net::SocketAddr;
 use std::str::FromStr;
 use crate::network::{NodeId, NetPacket};
 use crate::config::Config;
 use parity_crypto::publickey::{Generator, KeyPair, Public, Random, recover, Secret, sign, ecdh, ecies};
 use ethereum_types::H512;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::{Interval, Duration};
+use tokio::sync::RwLock;
 use slab::Slab;
-use std::io::Write;
 use tokio::sync::mpsc;
-use super::connection::Bytes;
 use super::session::{SessionEvent, ShareSession, SessionWrite, SessionRead, SessionState, SessionReadResult, channel_recv};
-use crate::network::connection::ConnectionRead;
+use super::NetEvent;
 
 
 pub struct Host {
     nodeid: NodeId,
     keypair: KeyPair,
     sessions: Arc<RwLock<Slab<ShareSession>>>,               // 就绪状态,未就绪状态的会话
+    net_sender: mpsc::Sender<NetEvent>,
 }
 
 impl Host {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, net_sender: mpsc::Sender<NetEvent>) -> Self {
         let secret = Secret::copy_from_str(config.secret.as_str()).unwrap();
         let keypair = KeyPair::from_secret(secret).unwrap();
         let nodeid = keypair.public().clone();
-        info!("keypair: {}, nodeid: {:?}", keypair, nodeid);
+        debug!("keypair: {}, nodeid: {:?}", keypair, nodeid);
         
         Host {
             nodeid,
             keypair,
             sessions: Arc::new(RwLock::new(Slab::new())),
+            net_sender,
         }
     }
 
-    async fn process_new_connect(stream: TcpStream, remote: Option<NodeId>, sessions: Arc<RwLock<Slab<ShareSession>>>) {
+    async fn process_new_connect(stream: TcpStream, local: NodeId, mut remote: Option<NodeId>, sessions: Arc<RwLock<Slab<ShareSession>>>, net_sender: mpsc::Sender<NetEvent>) {
         let is_active = remote.is_some();
         let (tx_session, mut rx_session) = mpsc::channel(1024);
         let share_session = ShareSession::new(remote.clone(), tx_session.clone());
         let key = sessions.write().await.insert(share_session);
-        info!("session new key: {}", key);
+        debug!("session new key: {}", key);
 
-        let state = SessionState::new(remote);
+        let state = SessionState::new(remote.clone());
         let state = Arc::new(RwLock::new(state));
 
         let (r, w) = TcpStream::into_split(stream);
@@ -54,64 +49,85 @@ impl Host {
         let mut sw = SessionWrite::new(w, tx_session.clone());
 
         if is_active {
-            tx_session.send(SessionEvent::SendAuth).await.unwrap();
+            tx_session.send(SessionEvent::SendAuth(local)).await.unwrap();
         }
 
         'outer: loop {
             let result = tokio::select! {
                 v1 = sr.reading(state.clone()) => {
-                    info!("reading task complete. {:?}", v1);
+                    debug!("reading task complete. {:?}", v1);
                     for srr in v1 {
                          match srr {
                             SessionReadResult::NewConnection => {
                                 info!("host, new connection, update state.");
                                 if let Some(s) = sessions.write().await.get_mut(key) {
                                     if s.nodeid.is_none() {
-                                        s.nodeid = state.read().await.remote.clone();
+                                        let node = state.read().await.remote.clone();
+                                        s.nodeid = node.clone();
+                                        remote = node;
                                     }
+                                    net_sender.send(NetEvent::Connected(s.nodeid.clone().unwrap())).await.unwrap();
+                                } else {
+                                    // fixme: 错误处理
+                                    error!("sessions get key {} error. {:?}", key, state.read().await.remote);
                                 }
                             },
-                            SessionReadResult::Packet(data) => {
-                                // fixme: 这个地方不会返回，应该在某个地方将消息发送到上层。
-                                info!("host read {:?}", data);
+                            SessionReadResult::Packet(ref data) => {
+                                let packet = NetPacket::new(remote.unwrap(), data);
+                                info!("host read {:?}", packet);
+                                net_sender.send(NetEvent::Read(packet)).await.unwrap();
                             },
                             SessionReadResult::Hub => {
                                 info!("host read connection disconnected, remove.");
-                                info!("sessions before remove key<{}>, {}", key, sessions.read().await.len());
+                                // info!("sessions before remove key<{}>, {}", key, sessions.read().await.len());
                                 sessions.write().await.remove(key);
-                                info!("sessions after remove key<{}>, {}", key, sessions.read().await.len());
+                                net_sender.send(NetEvent::Disconnected(remote.unwrap())).await.unwrap();
+                                // info!("sessions after remove key<{}>, {}", key, sessions.read().await.len());
                                 break 'outer;
                             },
                             SessionReadResult::Error(e) => {
                                 error!("host read error {}", e);
                                 sessions.write().await.remove(key);
+                                net_sender.send(NetEvent::Disconnected(remote.unwrap())).await.unwrap();
                                 break 'outer;
                             }
                         }
                     }
                 }
                 v2 = channel_recv(&mut rx_session, &mut sw, state.clone()) => {
-                    info!("channel recv task complete.");
+                    debug!("channel recv task complete.");
+                    if let Err(e) = v2 {
+                        // fixme: 发送错误，目前的处理是删除掉该连接， 后面可根据具体的错误，看是否有自修复的可能
+                        error!("host read session channel recv error: {}", e);
+                        sessions.write().await.remove(key);
+                        net_sender.send(NetEvent::Disconnected(remote.unwrap())).await.unwrap();
+                        break 'outer;
+                    }
                 }
             };
         }
 
-        info!("process new connect {:?} done.", state.read().await.remote);
+        info!("process session {:?} done.", remote);
     }
 
-    /// 启动网络服务， 1. 开启监听；
+    /// 启动网络服务，
     pub async fn start(&self, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+        // 1. 开启监听；
         let listener = TcpListener::bind(config.listen_addr.as_str()).await?;
         info!("listening on {}", config.listen_addr);
         let sessions = self.sessions.clone();
+        let sender = self.net_sender.clone();
+        let local_nodeid = self.nodeid.clone();
         tokio::spawn( async move {
             loop {
+                let net_sender = sender.clone();
+                let local = local_nodeid.clone();
                 match listener.accept().await {
                     Ok((stream, addr)) => {
                         info!("accept new tcp connection {}", addr);
                         let arc_sessions = sessions.clone();
                         tokio::spawn( async move {
-                            Host::process_new_connect(stream, None, arc_sessions).await;
+                            Host::process_new_connect(stream, local, None, arc_sessions, net_sender).await;
                         });
                     },
                     Err(e) => {
@@ -120,6 +136,9 @@ impl Host {
                 }
             }
         });
+
+        // 2. 开始定时任务
+        self.timer_task().await;
 
         Ok(())
     }
@@ -132,8 +151,10 @@ impl Host {
         info!("connected to {}, prepare to estabilsh session.", seed);
 
         let sessions = self.sessions.clone();
+        let sender = self.net_sender.clone();
+        let local_nodeid = self.nodeid.clone();
         tokio::spawn( async move {
-            Host::process_new_connect(stream, Some(nodeid), sessions).await;
+            Host::process_new_connect(stream, local_nodeid, Some(nodeid), sessions, sender.clone()).await;
         });
 
         Ok(())
@@ -155,54 +176,29 @@ impl Host {
     }
 
     /// 定时任务，待完成
-    pub async fn timer_task(&self) {
+    async fn timer_task(&self) {
         info!("timer task, start ping-pong detect.");
         // fixme: KAD节点发现服务待实现。
 
         // 心跳检测
-        // let arc_sessions = self.sessions.clone();
-        // tokio::spawn( async move {
-        //     Host::keep_alive(arc_sessions).await;
-        // });
+        let sessions = self.sessions.clone();
+        tokio::spawn( async move {
+            Host::keep_alive(sessions).await;
+        });
         info!("start timer task done.");
     }
-/*
-    async fn keep_alive(sessions: Arc<RwLock<Slab<Session>>>) {
+
+    async fn keep_alive(sessions: Arc<RwLock<Slab<ShareSession>>>) {
         loop {
-            let mut remove_key = Vec::new();
             let arc_sessions = sessions.clone();
-            info!("before sleep.");
-            tokio::time::sleep(Duration::new(60, 0)).await;
-
-            let mut pair = Vec::new();
-            {
-                for (k, s) in arc_sessions.write().iter() {
-                    pair.push((k, s.clone()));
+            tokio::time::sleep(tokio::time::Duration::new(60, 0)).await;
+            for (k, s) in arc_sessions.read().await.iter() {
+                if let Err(e) = s.sender.send(SessionEvent::KeepAlive).await {
+                    error!("channel send ping event error: {}", e);
                 }
             }
-
-            for (k, mut s) in pair {
-                // info!("after sleep trace 1.");
-                // let mut lock = s.lock().await;
-                // info!("after sleep trace 2.");
-
-                if let Err(e) = s.keep_alive().await {
-                    error!("session keep alive error: {}, remove {}.", e, k);
-                    remove_key.push(k);
-                }
-                info!("session keep alive done.");
-            }
-
-            {
-                let mut s = sessions.write();
-                for key in remove_key {
-                    s.remove(key);
-                }
-            }
-
         }
     }
-*/
 }
 
 pub fn enode_str_parse(node: &str) -> Result<(NodeId, &str), Box<dyn std::error::Error>> {

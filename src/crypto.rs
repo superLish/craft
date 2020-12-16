@@ -1,4 +1,3 @@
-
 use rand::rngs::OsRng;
 use secp256k1::Secp256k1;
 use secp256k1::{PublicKey, SecretKey};

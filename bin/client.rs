@@ -1,8 +1,11 @@
+//! 调试程序用的
+
 #[macro_use]
 extern crate log;
 
 use tokio::net::TcpStream;
 use tokio::prelude::*;
+use tokio::time::Duration;
 
 fn main() {
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).init().unwrap();
@@ -41,9 +44,9 @@ fn main() {
 }
 
 async fn run_tcp_client() -> Result<(), Box<dyn std::error::Error>> {
-    info!("prepare to connect to 127.0.0.1:30000");
-    let mut stream = TcpStream::connect("127.0.0.1:30000").await?;
-    info!("connected to 127.0.0.1:30000");
+    info!("prepare to connect to 127.0.0.1:50000");
+    let mut stream = TcpStream::connect("127.0.0.1:50000").await?;
+    info!("connected to 127.0.0.1:50000");
 
     stream.write_all(b"hello world!").await?;
 
@@ -51,8 +54,6 @@ async fn run_tcp_client() -> Result<(), Box<dyn std::error::Error>> {
     let n = stream.read(&mut buffer).await?;
     info!("read bytes: {:?}", &buffer[..n]);
 
-    loop {
-
-    }
+    tokio::time::sleep(Duration::new(60, 0)).await;
     Ok(())
 }
