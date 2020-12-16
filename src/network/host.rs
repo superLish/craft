@@ -161,7 +161,7 @@ impl Host {
     }
 
     pub async fn send_packet(&self, data: &NetPacket) -> Result<(), Box<dyn std::error::Error>> {
-        for (k, s) in self.sessions.read().await.iter() {
+        for (_k, s) in self.sessions.read().await.iter() {
             if s.nodeid.is_none() {
                 continue;
             }

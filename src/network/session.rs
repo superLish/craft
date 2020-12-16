@@ -237,7 +237,8 @@ impl SessionWrite {
             return Err(NetError::IoError(e.description().to_string()));
         }
 
-        state.write().await.ping = Some(Instant::now());
+        state.write().await.ping = Some(Instant
+        ::now());
 
         Ok(())
     }

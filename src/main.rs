@@ -116,10 +116,10 @@ async fn start_client(config: Config) {
     let send_task = async {
         sleep(Duration::from_millis(10)).await;
         info!("send ServerEvent::Start to server, start listen service.");
-        tx_server_event.send(ServerEvent::Start).await;
+        tx_server_event.send(ServerEvent::Start).await.unwrap();
         if let Some(ref seed) = seed {
             sleep(Duration::from_millis(1000)).await;
-            tx_server_event.send(ServerEvent::ActiveConnect(seed.clone())).await;
+            tx_server_event.send(ServerEvent::ActiveConnect(seed.clone())).await.unwrap();
         }
     };
 
@@ -128,31 +128,9 @@ async fn start_client(config: Config) {
             sleep(Duration::from_millis(10*1000)).await;
             let (nodeid, addr) = enode_str_parse(seed).unwrap();
             let data = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-            tx_server_event.send(ServerEvent::Send(NetPacket::new(nodeid, &data))).await;
+            tx_server_event.send(ServerEvent::Send(NetPacket::new(nodeid, &data))).await.unwrap();
         }
     };
 
     tokio::join!(recv_task, send_task, test_task);
 }
-
-
-// let task1 = async {
-//     info!("task1");
-// };
-//
-// let task2 = async {
-//     info!("task2");
-// };
-//
-// let main_task = async {
-//     // loop {
-//         tokio::select! {
-//             _ = task1 => {
-//                 info!("tast 1 exec.");
-//             }
-//             _ = task2 => {
-//                 info!("task 2 exec.");
-//             }
-//         }
-//     // }
-// };

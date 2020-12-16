@@ -4,9 +4,10 @@
 pub struct Config {
     pub listen_addr: String,      // 本地监听地址
     pub secret: String,           // 本节点私钥
-    pub seed: Option<String>,             // 种子节点，连接到远端
+    pub seed: Option<String>,     // 种子节点，连接到远端
 }
 
+// 仅用作调试测试用的
 impl Default for Config {
     fn default() -> Self {
         Config {
